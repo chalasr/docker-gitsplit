@@ -28,7 +28,7 @@ func main() {
     flag.Parse()
 
     config := gitsplit.NewConfigFromFile(".gitsplit.yml")
-    splitter, err := gitsplit.NewSplitter(config)
+    splitter, err := gitsplit.NewSplitter(config, &gitsplit.ReferenceSplitterLiteFactory{})
     if err != nil {
         log.Fatal(err)
     }
