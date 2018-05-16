@@ -2,11 +2,11 @@ package gitsplit
 
 import (
     "os"
-    "fmt"
     "sync"
     "regexp"
     "strings"
     log "github.com/sirupsen/logrus"
+    "github.com/pkg/errors"
     "github.com/gosimple/slug"
     "github.com/libgit2/git2go"
     "github.com/jderusse/gitsplit/utils"
@@ -33,7 +33,7 @@ func (r *GitRemoteCollection) Add(alias string, url string) *GitRemote {
 
 func (r *GitRemoteCollection) Get(alias string) (*GitRemote, error) {
     if remote, ok := r.items[alias]; !ok {
-        return nil, fmt.Errorf("The remote %s does not exists", alias)
+        return nil, errors.New("The remote does not exists")
     } else {
         return remote, nil
     }
@@ -46,8 +46,8 @@ func (r *GitRemoteCollection) Clean() {
         knownRemotes = append(knownRemotes, remote.id)
     }
 
-    mutex.Lock()
-    defer mutex.Unlock()
+    mutexRemoteList.Lock()
+    defer mutexRemoteList.Unlock()
     remotes, err := r.repository.Remotes.List()
     if err != nil {
         return
@@ -71,7 +71,8 @@ func (r *GitRemoteCollection) Flush() error {
     return nil
 }
 
-var mutex = &sync.Mutex{}
+var mutexRemoteList = &sync.Mutex{}
+var mutexReferences = &sync.Mutex{}
 
 type GitRemote struct {
     repository      *git.Repository
@@ -93,13 +94,13 @@ func NewGitRemote(repository *git.Repository, alias string, url string) *GitRemo
         id: id,
         alias: alias,
         url: url,
-        pool : utils.NewPool(10),
+        pool: utils.NewPool(10),
     }
 }
 
 func (r *GitRemote) init() error {
-    mutex.Lock()
-    defer mutex.Unlock()
+    mutexRemoteList.Lock()
+    defer mutexRemoteList.Unlock()
 
     remotes, err := r.repository.Remotes.List()
     if err != nil {
@@ -108,11 +109,11 @@ func (r *GitRemote) init() error {
 
     if !utils.InArray(remotes, r.id) {
         if _, err := r.repository.Remotes.Create(r.id, os.ExpandEnv(r.url)); err != nil {
-            return fmt.Errorf("Fail to create remote %s: %v", r.alias, err)
+            return errors.Wrapf(err, "Fail to create remote %s", r.alias)
         }
     } else {
         if err := r.repository.Remotes.SetUrl(r.id, os.ExpandEnv(r.url)); err != nil {
-            return fmt.Errorf("Fail to update remote %s: %v", r.alias, err)
+            return errors.Wrapf(err, "Fail to update remote %s", r.alias)
         }
     }
 
@@ -123,9 +124,12 @@ func (r *GitRemote) GetReferences() ([]Reference, error) {
     if r.cacheReferences != nil {
         return r.cacheReferences, nil
     }
+
+    mutexRemoteList.Lock()
+    defer mutexRemoteList.Unlock()
     result, err := utils.GitExec(r.repository.Path(), "ls-remote", r.id)
     if err != nil {
-        return nil, fmt.Errorf("Fail to fetch references: %v", err)
+        return nil, errors.Wrap(err, "Fail to fetch references")
     }
 
     references := []Reference{}
@@ -136,13 +140,13 @@ func (r *GitRemote) GetReferences() ([]Reference, error) {
         }
         columns := strings.Split(line, "\t")
         if len(columns) != 2 {
-            return nil, fmt.Errorf("Fail to parse reference %s: 2 columns expected", line)
+            return nil, errors.New("Fail to parse reference, 2 columns expected. Got " + line)
         }
         referenceId := columns[0];
         referenceName := columns[1];
         oid, err := git.NewOid(referenceId)
         if err != nil {
-            return nil, fmt.Errorf("Fail to parse reference %s: %v", line, err)
+            return nil, errors.Wrapf(err, "Fail to parse reference %s", line)
         }
         references = append(references, Reference{
             ShortName: cleanRegexp.ReplaceAllString(referenceName, ""),
@@ -160,11 +164,11 @@ func (r *GitRemote) Fetch() {
     r.pool.Push(func() (interface{}, error) {
         log.Info("Fetching from remote ", r.alias)
         if _, err := utils.GitExec(r.repository.Path(), "fetch", "-p", r.id); err != nil {
-            return nil, fmt.Errorf("Fail to update cache of %s: %v", r.alias, err)
+            return nil, errors.Wrapf(err, "Fail to update cache of %s", r.alias)
         }
 
         if _, err := utils.GitExec(r.repository.Path(), "fetch", "--tags", r.id); err != nil {
-            return nil, fmt.Errorf("Fail to update cache of %s: %v", r.alias, err)
+            return nil, errors.Wrapf(err, "Fail to update cache of %s", r.alias)
         }
 
         return nil, nil
@@ -176,7 +180,7 @@ func (r *GitRemote) Push(reference Reference, splitId *git.Oid, target string) {
     r.pool.Push(func() (interface{}, error) {
         references, err := r.GetReferences()
         if err != nil {
-            return nil, fmt.Errorf("Fail to get references for remote %s: %v", r.alias, err)
+            return nil, errors.Wrapf(err, "Fail to get references for remote %s", r.alias)
         }
 
         for _, remoteReference := range references {
@@ -191,12 +195,16 @@ func (r *GitRemote) Push(reference Reference, splitId *git.Oid, target string) {
         }
 
         log.Warn("Pushing "+reference.ShortName+" into "+target)
+        mutexRemoteList.Lock()
         r.cacheReferences = nil
+        mutexRemoteList.Unlock()
         if _, err := utils.GitExec(r.repository.Path(), "push", "-f", r.id, splitId.String()+":"+reference.Name); err != nil {
-            return nil, fmt.Errorf("Fail to push: %v", err)
+            return nil, errors.Wrap(err, "Fail to push")
         }
 
+        mutexRemoteList.Lock()
         r.cacheReferences = nil
+        mutexRemoteList.Unlock()
         return nil, nil
     })
 }

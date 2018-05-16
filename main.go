@@ -24,19 +24,28 @@ func init() {
     flag.Var(&whitelistReferences, "ref", "References to split.")
 }
 
+func handleError(err error) {
+    log.Fatal(err)
+}
+
 func main() {
     flag.Parse()
 
-    config := gitsplit.NewConfigFromFile(".gitsplit.yml")
-    splitter, err := gitsplit.NewSplitter(config, &gitsplit.ReferenceSplitterLiteFactory{})
+    config, err := gitsplit.NewConfigFromFile(".gitsplit.yml")
     if err != nil {
-        log.Fatal(err)
+        handleError(err)
     }
 
+    repository, err := gitsplit.GetCacheRepository(config.CacheDir)
+    if err != nil {
+        handleError(err)
+    }
+
+    splitter := gitsplit.NewSplitter(*config, repository)
     defer splitter.Close()
 
     if err := splitter.Split(whitelistReferences); err != nil {
-        log.Fatal(err)
+        handleError(err)
     }
 
     log.Info("Done")

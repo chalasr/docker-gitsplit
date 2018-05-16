@@ -7,7 +7,7 @@ import (
     "io/ioutil"
     "gopkg.in/yaml.v2"
     "path/filepath"
-    log "github.com/sirupsen/logrus"
+    "github.com/pkg/errors"
 )
 
 type StringCollection []string
@@ -24,7 +24,7 @@ type Config struct {
     Origins    []string  `yaml:"origins"`
 }
 
-func (stringCollection *StringCollection) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (s *StringCollection) UnmarshalYAML(unmarshal func(interface{}) error) error {
     var raw interface{}
     if err := unmarshal(& raw); err != nil {
         return err
@@ -33,9 +33,9 @@ func (stringCollection *StringCollection) UnmarshalYAML(unmarshal func(interface
 
     switch raw.(type){
         case string:
-            *stringCollection = []string{raw.(string)}
+            *s = []string{raw.(string)}
         case []string:
-            *stringCollection = raw.([]string)
+            *s = raw.([]string)
         default:
             return fmt.Errorf("expects a string or n array of strings")
     }
@@ -50,23 +50,23 @@ func resolvePath(path string) string {
 
     pwd, err := os.Getwd()
     if err != nil {
-        log.Fatal(err)
+        return path
     }
 
     return filepath.Join(pwd, path)
 }
 
-func NewConfigFromFile(filePath string) Config {
-    config := Config{}
+func NewConfigFromFile(filePath string) (*Config, error) {
+    config := &Config{}
 
     yamlFile, err := ioutil.ReadFile(resolvePath(filePath))
     if err != nil {
-        log.Fatalf("Fail to read config file. %v ", err)
+        return nil, errors.Wrap(err, "Fail to read config file")
     }
 
     err = yaml.Unmarshal(yamlFile, &config)
     if err != nil {
-        log.Fatalf("Fail to load config file. %v", err)
+        return nil, errors.Wrap(err, "Fail to load config file")
     }
 
     if config.ProjectDir == "" {
@@ -83,5 +83,5 @@ func NewConfigFromFile(filePath string) Config {
         config.Origins =  []string{".*"}
     }
 
-    return config
+    return config, nil
 }

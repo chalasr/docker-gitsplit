@@ -6,10 +6,7 @@ import (
     lite "github.com/splitsh/lite/splitter"
 )
 
-type ReferenceSplitterLiteFactory struct {
-}
-
-func (f *ReferenceSplitterLiteFactory) New(repository *git.Repository) ReferenceSplitterInterface {
+func NewReferenceSplitterLite(repository *git.Repository) *ReferenceSplitterLite {
     return  &ReferenceSplitterLite {
         repository: repository,
     }
