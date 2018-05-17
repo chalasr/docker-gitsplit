@@ -13,8 +13,8 @@ import (
 type StringCollection []string
 
 type Split struct {
-    Prefixes StringCollection `yaml:"prefix"`
-    Targets StringCollection  `yaml:"target"`
+    Prefixes StringCollection  `yaml:"prefix"`
+    Targets  StringCollection  `yaml:"target"`
 }
 
 type Config struct {
@@ -44,6 +44,11 @@ func (s *StringCollection) UnmarshalYAML(unmarshal func(interface{}) error) erro
 }
 
 func resolvePath(path string) string {
+    path = os.ExpandEnv(path)
+    if path =="~" || strings.HasPrefix(path, "~/") {
+        path = strings.Replace(path, "~", os.Getenv("HOME"), 1)
+    }
+
     if filepath.IsAbs(path) {
         return path
     }
@@ -73,12 +78,7 @@ func NewConfigFromFile(filePath string) (*Config, error) {
         config.ProjectDir = resolvePath(".")
     }
 
-    if !strings.HasSuffix(config.CacheDir, ".git") {
-        config.CacheDir = filepath.Join(resolvePath(os.ExpandEnv(config.CacheDir)), ".git")
-    }
-    if !strings.HasSuffix(config.ProjectDir, ".git") {
-        config.ProjectDir = filepath.Join(resolvePath(os.ExpandEnv(config.ProjectDir)), ".git")
-    }
+    config.CacheDir = resolvePath(config.CacheDir)
     if len(config.Origins) == 0 {
         config.Origins =  []string{".*"}
     }

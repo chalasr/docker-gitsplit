@@ -2,6 +2,7 @@ package gitsplit
 
 import (
     "os"
+    "fmt"
     "sync"
     "regexp"
     "strings"
@@ -24,8 +25,8 @@ func NewGitRemoteCollection(repository *git.Repository) *GitRemoteCollection {
     }
 }
 
-func (r *GitRemoteCollection) Add(alias string, url string) *GitRemote {
-    remote := NewGitRemote(r.repository, alias, url)
+func (r *GitRemoteCollection) Add(alias string, url string, refs []string) *GitRemote {
+    remote := NewGitRemote(r.repository, alias, url, refs)
     r.items[alias] = remote
 
     return remote
@@ -72,18 +73,17 @@ func (r *GitRemoteCollection) Flush() error {
 }
 
 var mutexRemoteList = &sync.Mutex{}
-var mutexReferences = &sync.Mutex{}
 
 type GitRemote struct {
     repository      *git.Repository
     id              string
     alias           string
+    refs            []string
     url             string
     pool            *utils.Pool
-    cacheReferences []Reference
 }
 
-func NewGitRemote(repository *git.Repository, alias string, url string) *GitRemote {
+func NewGitRemote(repository *git.Repository, alias string, url string, refs []string) *GitRemote {
     id := slug.Make(alias)
     if id != alias {
         id = id+"-"+utils.Hash(alias)
@@ -93,6 +93,7 @@ func NewGitRemote(repository *git.Repository, alias string, url string) *GitRemo
         repository: repository,
         id: id,
         alias: alias,
+        refs: refs,
         url: url,
         pool: utils.NewPool(10),
     }
@@ -120,93 +121,111 @@ func (r *GitRemote) init() error {
     return nil
 }
 
-func (r *GitRemote) GetReferences() ([]Reference, error) {
-    if r.cacheReferences != nil {
-        return r.cacheReferences, nil
+func (r *GitRemote) GetReference(alias string) (*Reference, error) {
+    references, err := r.GetReferences()
+    if err != nil {
+        return nil, errors.Wrap(err, "Unable to get reference")
     }
 
+    for _, reference := range references {
+        if reference.Alias == alias {
+            return &reference, nil
+        }
+    }
+
+    return nil, nil
+}
+
+func (r *GitRemote) AddReference(alias string, id *git.Oid) error {
+    for _, ref := range r.refs {
+        reference, err := r.repository.References.Create(fmt.Sprintf("refs/remotes/%s/%s/%s", r.id, ref, alias), id, true, "")
+        if err != nil {
+            return errors.Wrap(err, "Fail to add reference")
+        }
+        defer reference.Free()
+    }
+
+    return nil
+}
+
+func (r *GitRemote) GetReferences() ([]Reference, error) {
     mutexRemoteList.Lock()
     defer mutexRemoteList.Unlock()
-    result, err := utils.GitExec(r.repository.Path(), "ls-remote", r.id)
+
+    iterator, err := r.repository.NewReferenceIteratorGlob(fmt.Sprintf("refs/remotes/%s/*", r.id))
     if err != nil {
         return nil, errors.Wrap(err, "Fail to fetch references")
     }
 
+    defer iterator.Free()
     references := []Reference{}
-    cleanRegexp := regexp.MustCompile("^refs/(tags|heads)/")
-    for _, line := range strings.Split(result.Output, "\n") {
-        if len(line) == 0 {
-            continue
-        }
-        columns := strings.Split(line, "\t")
-        if len(columns) != 2 {
-            return nil, errors.New("Fail to parse reference, 2 columns expected. Got " + line)
-        }
-        referenceId := columns[0];
-        referenceName := columns[1];
-        oid, err := git.NewOid(referenceId)
-        if err != nil {
-            return nil, errors.Wrapf(err, "Fail to parse reference %s", line)
-        }
-        references = append(references, Reference{
-            ShortName: cleanRegexp.ReplaceAllString(referenceName, ""),
-            Name: referenceName,
-            Id:   oid,
-        })
-    }
-    r.cacheReferences = references
 
-    return r.cacheReferences, nil
+    reference, err := iterator.Next()
+    cleanShortNameRegexp := regexp.MustCompile(fmt.Sprintf("^refs/remotes/%s/", r.id))
+    cleanAliasRegexp := regexp.MustCompile(fmt.Sprintf("^refs/remotes/%s/(%s)/", r.id, strings.Join(r.refs, "|")))
+    filterRegexp := regexp.MustCompile(fmt.Sprintf("^refs/remotes/%s/(%s)/", r.id, strings.Join(r.refs, "|")))
+    for err == nil {
+        if filterRegexp.MatchString(reference.Name()) {
+            references = append(references, Reference{
+                Alias: cleanAliasRegexp.ReplaceAllString(reference.Name(), ""),
+                ShortName: cleanShortNameRegexp.ReplaceAllString(reference.Name(), ""),
+                Name: reference.Name(),
+                Id:   reference.Target(),
+            })
+        }
+        reference, err = iterator.Next()
+    }
+
+    return references, nil
 }
 
 func (r *GitRemote) Fetch() {
     r.init()
     r.pool.Push(func() (interface{}, error) {
         log.Info("Fetching from remote ", r.alias)
-        if _, err := utils.GitExec(r.repository.Path(), "fetch", "-p", r.id); err != nil {
-            return nil, errors.Wrapf(err, "Fail to update cache of %s", r.alias)
-        }
 
-        if _, err := utils.GitExec(r.repository.Path(), "fetch", "--tags", r.id); err != nil {
-            return nil, errors.Wrapf(err, "Fail to update cache of %s", r.alias)
+        for _, ref := range (r.refs) {
+            if _, err := utils.GitExec(r.repository.Path(), "fetch", "--prune", r.id, fmt.Sprintf("refs/%s/*:refs/remotes/%s/%s/*", ref, r.id, ref)); err != nil {
+                return nil, errors.Wrapf(err, "Fail to update cache of %s", r.alias)
+            }
         }
 
         return nil, nil
     })
 }
 
-func (r *GitRemote) Push(reference Reference, splitId *git.Oid, target string) {
+func (r *GitRemote) PushRef(refs string) {
     r.init()
     r.pool.Push(func() (interface{}, error) {
-        references, err := r.GetReferences()
-        if err != nil {
-            return nil, errors.Wrapf(err, "Fail to get references for remote %s", r.alias)
-        }
-
-        for _, remoteReference := range references {
-            if remoteReference.Name == reference.Name {
-                if remoteReference.Id.Equal(splitId) {
-                    log.Info("Already pushed "+reference.ShortName+" into "+target)
-                    return nil, nil
-                }
-                log.Warn("Out of date "+reference.ShortName+" into "+target)
-                break
-            }
-        }
-
-        log.Warn("Pushing "+reference.ShortName+" into "+target)
-        mutexRemoteList.Lock()
-        r.cacheReferences = nil
-        mutexRemoteList.Unlock()
-        if _, err := utils.GitExec(r.repository.Path(), "push", "-f", r.id, splitId.String()+":"+reference.Name); err != nil {
+        log.Warn("Pushing "+refs+" into "+r.id)
+        if _, err := utils.GitExec(r.repository.Path(), "push", "-f", r.id, refs); err != nil {
             return nil, errors.Wrap(err, "Fail to push")
         }
 
-        mutexRemoteList.Lock()
-        r.cacheReferences = nil
-        mutexRemoteList.Unlock()
         return nil, nil
     })
+}
+
+func (r *GitRemote) Push(reference Reference, splitId *git.Oid) error {
+    references, err := r.GetReferences()
+    if err != nil {
+        return errors.Wrapf(err, "Fail to get references for remote %s", r.alias)
+    }
+
+    for _, remoteReference := range references {
+        if remoteReference.Alias == reference.Alias {
+            if remoteReference.Id.Equal(splitId) {
+                log.Info("Already pushed "+reference.Alias+" into "+r.id)
+                return nil
+            }
+            log.Warn("Out of date "+reference.Alias+" for "+r.id)
+            break
+        }
+    }
+
+    r.PushRef(splitId.String()+":refs/"+reference.ShortName)
+
+    return nil
 }
 
 func (r *GitRemote) Flush() error {

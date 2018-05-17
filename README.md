@@ -88,7 +88,7 @@ pipeline:
       - /drone/env/gitsplit.ssh:/root/.ssh/
     commands:
       # have to fetch remote branches
-      - git fetch
+      - git fetch --prune --unshallow || true
       - gitsplit
 ```
 
@@ -127,7 +127,7 @@ install:
   # update local repository. Because travis fetch a shallow copy
   - git config remote.origin.fetch "+refs/*:refs/*"
   - git config remote.origin.mirror true
-  - git fetch --unshallow
+  - git fetch --prune --unshallow || true
 
 script:
   - docker run --rm -t -e GH_TOKEN -v /cache/gitsplit:/cache/gitsplit -v ${PWD}:/srv jderusse/gitsplit --ref "${TRAVIS_BRANCH}"
@@ -170,6 +170,8 @@ split:
       - cache/gitsplit
   variables:
     GIT_STRATEGY: clone
+    GIT_CHECKOUT: "false"
+    GIT_DEPTH: 1
   before_script:
     - eval $(ssh-agent -s)
     - mkdir -p ~/.ssh
@@ -180,6 +182,6 @@ split:
   script:
     - git config remote.origin.fetch "+refs/*:refs/*"
     - git config remote.origin.mirror true
-    - git fetch
+    - git fetch --prune
     - gitsplit --ref "${CI_COMMIT_REF_NAME}"
 ```

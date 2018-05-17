@@ -36,17 +36,19 @@ func main() {
         handleError(err)
     }
 
-    repository, err := gitsplit.GetCacheRepository(config.CacheDir)
+    workingSpaceFactory := gitsplit.NewWorkingSpaceFactory()
+
+    workingSpace, err := workingSpaceFactory.CreateWorkingSpace(*config)
+    defer workingSpace.Close()
     if err != nil {
         handleError(err)
     }
-
-    splitter := gitsplit.NewSplitter(*config, repository)
-    defer splitter.Close()
-
-    if err := splitter.Split(whitelistReferences); err != nil {
+    if err := workingSpace.Init(); err != nil {
         handleError(err)
     }
 
-    log.Info("Done")
+    splitter := gitsplit.NewSplitter(*config, workingSpace)
+    if err := splitter.Split(whitelistReferences); err != nil {
+        handleError(err)
+    }
 }
