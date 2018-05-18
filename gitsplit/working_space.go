@@ -1,7 +1,6 @@
 package gitsplit
 
 import (
-    "path/filepath"
     "github.com/libgit2/git2go"
     "github.com/pkg/errors"
     log "github.com/sirupsen/logrus"
@@ -37,15 +36,31 @@ func (w *WorkingSpaceFactory) CreateWorkingSpace(config Config) (*WorkingSpace, 
 }
 
 func (w *WorkingSpaceFactory) getRepository(config Config) (*git.Repository, error) {
-    if utils.FileExists(filepath.Join(config.CacheDir, ".git")) {
-        return git.OpenRepository(filepath.Join(config.CacheDir, ".git"))
+    if config.CacheUri.IsLocal() && !utils.FileExists(config.CacheUri.SchemelessUri()) {
+        repository, err := git.InitRepository(config.CacheUri.SchemelessUri(), true)
+        if err != nil {
+            return nil, errors.Wrap(err, "Fail to initialize cache repository")
+        }
+        repository.Free()
+    }
+    repoPath := "/tmp/toto"
+    if utils.FileExists(repoPath) {
+        return git.OpenRepository(repoPath)
     }
 
-    if utils.FileExists(config.CacheDir) {
-        return git.OpenRepository(config.CacheDir)
+    if config.CacheUri.IsLocal() && utils.FileExists(config.CacheUri.SchemelessUri()) {
+        if err := utils.Copy(config.CacheUri.SchemelessUri(), repoPath); err != nil {
+            return nil, errors.Wrap(err, "Fail to create working space from cache")
+        }
+
+        return git.OpenRepository(repoPath)
     }
 
-    return git.InitRepository(config.CacheDir, true)
+    if _, err := utils.GitExec(repoPath, "clone", "--mirror", config.CacheUri.Uri(), repoPath); err != nil {
+        return nil, errors.Wrap(err, "Fail to create working space from cache")
+    }
+
+    return git.OpenRepository(repoPath)
 }
 
 func (w *WorkingSpace) Repository() *git.Repository {
@@ -57,8 +72,17 @@ func (w *WorkingSpace) Remotes() *GitRemoteCollection {
 }
 
 func (w *WorkingSpace) Init() error {
-    w.remotes.Add("cache", "", []string{"split-flag"})
-    w.remotes.Add("origin", w.config.ProjectDir, []string{"heads", "tags"}).Fetch()
+    if w.config.CacheUri.IsLocal() && !utils.FileExists(w.config.CacheUri.SchemelessUri()) {
+        repository, err := git.InitRepository(w.config.CacheUri.SchemelessUri(), true)
+        if err != nil {
+            return errors.Wrap(err, "Fail to initialize cache repository")
+        }
+        repository.Free()
+    }
+    w.remotes.Add("cache", w.config.CacheUri.Uri(), []string{"split-flag"})
+    w.remotes.Flush()
+
+    w.remotes.Add("origin", w.config.ProjectUri.Uri(), []string{"heads", "tags"}).Fetch()
 
     for _, split := range w.config.Splits {
         for _, target := range split.Targets {
@@ -76,6 +100,14 @@ func (w *WorkingSpace) Init() error {
 }
 
 func (w *WorkingSpace) Close() {
-    w.remotes.Flush()
+    remote, err := w.remotes.Get("cache")
+    if err == nil {
+        remote.PushMirror()
+    }
+
+    if err := w.remotes.Flush(); err != nil {
+        log.Fatal(err)
+    }
     w.repository.Free()
+    //rm repoPath
 }

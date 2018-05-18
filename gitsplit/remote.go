@@ -199,7 +199,7 @@ func (r *GitRemote) Fetch() {
         log.Info("Fetching from remote ", r.alias)
 
         for _, ref := range (r.refs) {
-            if _, err := utils.GitExec(r.repository.Path(), "fetch", "--prune", r.id, fmt.Sprintf("refs/%s/*:refs/remotes/%s/%s/*", ref, r.id, ref)); err != nil {
+            if _, err := utils.GitExec(r.repository.Path(), "fetch", "--force", "--prune", r.id, fmt.Sprintf("refs/%s/*:refs/remotes/%s/%s/*", ref, r.id, ref)); err != nil {
                 return nil, errors.Wrapf(err, "Fail to update cache of %s", r.alias)
             }
         }
@@ -212,6 +212,17 @@ func (r *GitRemote) PushRef(refs string) {
     r.pool.Push(func() (interface{}, error) {
         log.Warn("Pushing "+refs+" into "+r.alias)
         if _, err := utils.GitExec(r.repository.Path(), "push", "-f", r.id, refs); err != nil {
+            return nil, errors.Wrap(err, "Fail to push")
+        }
+
+        return nil, nil
+    })
+}
+
+func (r *GitRemote) PushMirror() {
+    r.pool.Push(func() (interface{}, error) {
+        log.Warn("Pushing --mirror into "+r.alias)
+        if _, err := utils.GitExec(r.repository.Path(), "push", "-f", "--mirror", r.id); err != nil {
             return nil, errors.Wrap(err, "Fail to push")
         }
 

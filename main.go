@@ -51,4 +51,5 @@ func main() {
     if err := splitter.Split(whitelistReferences); err != nil {
         handleError(err)
     }
+    log.Info("Done")
 }

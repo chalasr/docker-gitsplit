@@ -3,8 +3,10 @@ package utils
 import (
     "bytes"
     "fmt"
+    "strings"
     "syscall"
     "os/exec"
+    log "github.com/sirupsen/logrus"
 )
 
 type ExecResut struct {
@@ -44,6 +46,9 @@ func GitExec(repository string, command string, arg ...string) (ExecResut, error
     if result.ExitCode != 0 {
         return result, fmt.Errorf(result.Output)
     }
+
+    log.Info(strings.Join(append([]string{"git", command}, arg...), " "))
+    log.Info(result.Output)
 
     return result, nil
 }
