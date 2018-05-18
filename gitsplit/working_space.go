@@ -26,7 +26,6 @@ func (w *WorkingSpaceFactory) CreateWorkingSpace(config Config) (*WorkingSpace, 
     if err != nil {
         return nil, errors.Wrap(err, "Fail to create working repository")
     }
-    log.Info("Working on ", repository.Path())
 
     return &WorkingSpace{
         config: config,
@@ -48,6 +47,7 @@ func (w *WorkingSpaceFactory) getRepository(config Config) (*git.Repository, err
         return git.OpenRepository(repoPath)
     }
 
+    log.Info("Working on ", repoPath)
     if config.CacheUri.IsLocal() && utils.FileExists(config.CacheUri.SchemelessUri()) {
         if err := utils.Copy(config.CacheUri.SchemelessUri(), repoPath); err != nil {
             return nil, errors.Wrap(err, "Fail to create working space from cache")
@@ -56,11 +56,7 @@ func (w *WorkingSpaceFactory) getRepository(config Config) (*git.Repository, err
         return git.OpenRepository(repoPath)
     }
 
-    if _, err := utils.GitExec(repoPath, "clone", "--mirror", config.CacheUri.Uri(), repoPath); err != nil {
-        return nil, errors.Wrap(err, "Fail to create working space from cache")
-    }
-
-    return git.OpenRepository(repoPath)
+    return git.InitRepository(repoPath, true)
 }
 
 func (w *WorkingSpace) Repository() *git.Repository {
@@ -79,9 +75,7 @@ func (w *WorkingSpace) Init() error {
         }
         repository.Free()
     }
-    w.remotes.Add("cache", w.config.CacheUri.Uri(), []string{"split-flag"})
-    w.remotes.Flush()
-
+    w.remotes.Add("cache", w.config.CacheUri.Uri(), []string{"split"}).Fetch()
     w.remotes.Add("origin", w.config.ProjectUri.Uri(), []string{"heads", "tags"}).Fetch()
 
     for _, split := range w.config.Splits {
@@ -102,7 +96,7 @@ func (w *WorkingSpace) Init() error {
 func (w *WorkingSpace) Close() {
     remote, err := w.remotes.Get("cache")
     if err == nil {
-        remote.PushMirror()
+        remote.PushAll()
     }
 
     if err := w.remotes.Flush(); err != nil {

@@ -211,7 +211,7 @@ func (r *GitRemote) Fetch() {
 func (r *GitRemote) PushRef(refs string) {
     r.pool.Push(func() (interface{}, error) {
         log.Warn("Pushing "+refs+" into "+r.alias)
-        if _, err := utils.GitExec(r.repository.Path(), "push", "-f", r.id, refs); err != nil {
+        if _, err := utils.GitExec(r.repository.Path(), "push", "--force", r.id, refs); err != nil {
             return nil, errors.Wrap(err, "Fail to push")
         }
 
@@ -219,15 +219,10 @@ func (r *GitRemote) PushRef(refs string) {
     })
 }
 
-func (r *GitRemote) PushMirror() {
-    r.pool.Push(func() (interface{}, error) {
-        log.Warn("Pushing --mirror into "+r.alias)
-        if _, err := utils.GitExec(r.repository.Path(), "push", "-f", "--mirror", r.id); err != nil {
-            return nil, errors.Wrap(err, "Fail to push")
-        }
-
-        return nil, nil
-    })
+func (r *GitRemote) PushAll() {
+    for _, ref := range (r.refs) {
+        r.PushRef(fmt.Sprintf("refs/remotes/%s/%s/*:refs/%s/*", r.id, ref, ref))
+    }
 }
 
 func (r *GitRemote) Push(reference Reference, splitId *git.Oid) error {

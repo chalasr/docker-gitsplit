@@ -68,21 +68,21 @@ func (s *Splitter) Split(whitelistReferences []string) error {
 }
 
 func (s *Splitter) splitReference(reference Reference, split Split) error {
-    flagSuffix := utils.Hash(reference.Name)+"-"+utils.Hash(strings.Join(split.Prefixes, "-"))
-    sourceReferenceName := "source-"+flagSuffix
-    targetReferenceName := "target-"+flagSuffix
-    flagTemp := "refs/split-temp/"+flagSuffix
+    flagTemp := "refs/split-temp/"+utils.Hash(reference.Name)+"-"+utils.Hash(strings.Join(split.Prefixes, "-"))
 
     remote, err := s.workingSpace.Remotes().Get("cache")
     if err != nil {
         return err
     }
-    sourceReference, err := remote.GetReference(sourceReferenceName)
+    cachePool := NewCachePool(remote)
+
+
+    previousReference, err := cachePool.GetItem(reference.Name, split)
     if err != nil {
-        return err
+        return errors.Wrap(err, "Fail to fetch previousReference metadata")
     }
 
-    if sourceReference != nil && sourceReference.Id.Equal(reference.Id) {
+    if previousReference.IsFresh(reference) {
         log.Info("Already splitted "+reference.Alias+" for "+strings.Join(split.Prefixes, ", "))
     } else {
         log.Warn("Splitting "+reference.Alias+" for "+strings.Join(split.Prefixes, ", "))
@@ -102,20 +102,10 @@ func (s *Splitter) splitReference(reference Reference, split Split) error {
             return errors.Wrapf(err, "Unable to delete temporary reference %s targeting %s", flagTemp, splitId)
         }
 
-        if err := remote.AddReference(sourceReferenceName, reference.Id); err != nil {
-            return errors.Wrapf(err, "Unable to create target reference %s targeting %s", targetReferenceName, splitId)
+        previousReference.Set(reference.Id, splitId)
+        if err := cachePool.SaveItem(previousReference); err != nil {
+            return errors.Wrapf(err, "Fail to cache reference %s targeting %s", flagTemp)
         }
-        if err := remote.AddReference(targetReferenceName, splitId); err != nil {
-            return errors.Wrapf(err, "Unable to create target reference %s targeting %s", targetReferenceName, splitId)
-        }
-    }
-
-    targetReference, err := remote.GetReference(targetReferenceName)
-    if err != nil {
-        return err
-    }
-    if targetReference == nil {
-        return errors.Wrap(err, "Unable to locate split result")
     }
 
     for _, target := range split.Targets {
@@ -123,7 +113,7 @@ func (s *Splitter) splitReference(reference Reference, split Split) error {
         if err != nil {
             return err
         }
-        if err := remote.Push(reference, targetReference.Id); err != nil {
+        if err := remote.Push(reference, previousReference.TargetId()); err != nil {
             return err
         }
     }
