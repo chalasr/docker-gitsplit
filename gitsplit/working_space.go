@@ -1,8 +1,10 @@
 package gitsplit
 
 import (
+    "path/filepath"
     "github.com/libgit2/git2go"
     "github.com/pkg/errors"
+    log "github.com/sirupsen/logrus"
     "github.com/jderusse/gitsplit/utils"
 )
 
@@ -25,6 +27,7 @@ func (w *WorkingSpaceFactory) CreateWorkingSpace(config Config) (*WorkingSpace, 
     if err != nil {
         return nil, errors.Wrap(err, "Fail to create working repository")
     }
+    log.Info("Working on ", repository.Path())
 
     return &WorkingSpace{
         config: config,
@@ -34,8 +37,8 @@ func (w *WorkingSpaceFactory) CreateWorkingSpace(config Config) (*WorkingSpace, 
 }
 
 func (w *WorkingSpaceFactory) getRepository(config Config) (*git.Repository, error) {
-    if utils.FileExists(config.CacheDir+"/.git") {
-        return git.OpenRepository(config.CacheDir)
+    if utils.FileExists(filepath.Join(config.CacheDir, ".git")) {
+        return git.OpenRepository(filepath.Join(config.CacheDir, ".git"))
     }
 
     if utils.FileExists(config.CacheDir) {
@@ -54,7 +57,6 @@ func (w *WorkingSpace) Remotes() *GitRemoteCollection {
 }
 
 func (w *WorkingSpace) Init() error {
-
     w.remotes.Add("cache", "", []string{"split-flag"})
     w.remotes.Add("origin", w.config.ProjectDir, []string{"heads", "tags"}).Fetch()
 

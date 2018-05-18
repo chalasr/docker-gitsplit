@@ -13,21 +13,28 @@ import (
     "github.com/jderusse/gitsplit/utils"
 )
 
+
 type GitRemoteCollection struct {
-    repository *git.Repository
-    items      map[string]*GitRemote
+    repository      *git.Repository
+    items           map[string]*GitRemote
+    mutexRemoteList *sync.Mutex
 }
 
 func NewGitRemoteCollection(repository *git.Repository) *GitRemoteCollection {
     return &GitRemoteCollection{
         items: make(map[string]*GitRemote),
         repository: repository,
+        mutexRemoteList: &sync.Mutex{},
     }
 }
 
 func (r *GitRemoteCollection) Add(alias string, url string, refs []string) *GitRemote {
     remote := NewGitRemote(r.repository, alias, url, refs)
     r.items[alias] = remote
+
+    r.mutexRemoteList.Lock()
+    defer r.mutexRemoteList.Unlock()
+    remote.Init()
 
     return remote
 }
@@ -47,8 +54,9 @@ func (r *GitRemoteCollection) Clean() {
         knownRemotes = append(knownRemotes, remote.id)
     }
 
-    mutexRemoteList.Lock()
-    defer mutexRemoteList.Unlock()
+    r.mutexRemoteList.Lock()
+    defer r.mutexRemoteList.Unlock()
+
     remotes, err := r.repository.Remotes.List()
     if err != nil {
         return
@@ -72,8 +80,6 @@ func (r *GitRemoteCollection) Flush() error {
     return nil
 }
 
-var mutexRemoteList = &sync.Mutex{}
-
 type GitRemote struct {
     repository      *git.Repository
     id              string
@@ -81,6 +87,8 @@ type GitRemote struct {
     refs            []string
     url             string
     pool            *utils.Pool
+    cacheReferences []Reference
+    mutexReferences *sync.Mutex
 }
 
 func NewGitRemote(repository *git.Repository, alias string, url string, refs []string) *GitRemote {
@@ -96,13 +104,11 @@ func NewGitRemote(repository *git.Repository, alias string, url string, refs []s
         refs: refs,
         url: url,
         pool: utils.NewPool(10),
+        mutexReferences: &sync.Mutex{},
     }
 }
 
-func (r *GitRemote) init() error {
-    mutexRemoteList.Lock()
-    defer mutexRemoteList.Unlock()
-
+func (r *GitRemote) Init() error {
     remotes, err := r.repository.Remotes.List()
     if err != nil {
         return err
@@ -137,6 +143,10 @@ func (r *GitRemote) GetReference(alias string) (*Reference, error) {
 }
 
 func (r *GitRemote) AddReference(alias string, id *git.Oid) error {
+    r.mutexReferences.Lock()
+    defer r.mutexReferences.Unlock()
+
+    r.cacheReferences = nil
     for _, ref := range r.refs {
         reference, err := r.repository.References.Create(fmt.Sprintf("refs/remotes/%s/%s/%s", r.id, ref, alias), id, true, "")
         if err != nil {
@@ -149,8 +159,12 @@ func (r *GitRemote) AddReference(alias string, id *git.Oid) error {
 }
 
 func (r *GitRemote) GetReferences() ([]Reference, error) {
-    mutexRemoteList.Lock()
-    defer mutexRemoteList.Unlock()
+    r.mutexReferences.Lock()
+    defer r.mutexReferences.Unlock()
+
+    if r.cacheReferences != nil {
+        return r.cacheReferences, nil
+    }
 
     iterator, err := r.repository.NewReferenceIteratorGlob(fmt.Sprintf("refs/remotes/%s/*", r.id))
     if err != nil {
@@ -176,11 +190,11 @@ func (r *GitRemote) GetReferences() ([]Reference, error) {
         reference, err = iterator.Next()
     }
 
+    r.cacheReferences = references
     return references, nil
 }
 
 func (r *GitRemote) Fetch() {
-    r.init()
     r.pool.Push(func() (interface{}, error) {
         log.Info("Fetching from remote ", r.alias)
 
@@ -195,9 +209,8 @@ func (r *GitRemote) Fetch() {
 }
 
 func (r *GitRemote) PushRef(refs string) {
-    r.init()
     r.pool.Push(func() (interface{}, error) {
-        log.Warn("Pushing "+refs+" into "+r.id)
+        log.Warn("Pushing "+refs+" into "+r.alias)
         if _, err := utils.GitExec(r.repository.Path(), "push", "-f", r.id, refs); err != nil {
             return nil, errors.Wrap(err, "Fail to push")
         }
@@ -215,10 +228,10 @@ func (r *GitRemote) Push(reference Reference, splitId *git.Oid) error {
     for _, remoteReference := range references {
         if remoteReference.Alias == reference.Alias {
             if remoteReference.Id.Equal(splitId) {
-                log.Info("Already pushed "+reference.Alias+" into "+r.id)
+                log.Info("Already pushed "+reference.Alias+" into "+r.alias)
                 return nil
             }
-            log.Warn("Out of date "+reference.Alias+" for "+r.id)
+            log.Warn("Out of date "+reference.Alias+" for "+r.alias)
             break
         }
     }

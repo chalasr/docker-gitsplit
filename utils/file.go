@@ -5,7 +5,7 @@ import (
 )
 
 func FileExists(path string) bool {
-    if _, err := os.Stat("/path/to/whatever"); os.IsNotExist(err) {
+    if _, err := os.Stat(path); os.IsNotExist(err) {
         return false
     }
 
